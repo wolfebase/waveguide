@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -317,6 +319,57 @@ func extinfSum(playlist string) (n int, seconds float64) {
 		seconds += f
 	}
 	return n, seconds
+}
+
+// A segment name cut from the playlist used to keep that whole playlist
+// alive in the clock map. Each new segment pinned one more copy, so a long
+// window grew with the square of its length.
+func TestStampDoesNotKeepPlaylistText(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "init.mp4"), videoInit(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const n = 160
+	const pad = 4096
+	for i := 0; i < n; i++ {
+		seg := keyframeFragment(int64(i)*90000, 90000)
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("seg%05d.m4s", i)), seg, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var st playlistStamper
+	tl := NewTimeline()
+	marker := strings.Repeat("Q", pad)
+	heap := func() uint64 {
+		runtime.GC()
+		debug.FreeOSMemory()
+		runtime.GC()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return m.HeapAlloc
+	}
+	before := heap()
+	for i := 1; i <= n; i++ {
+		var b strings.Builder
+		b.WriteString("#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-TARGETDURATION:1\n")
+		for j := 0; j < i; j++ {
+			fmt.Fprintf(&b, "#%s\n#EXTINF:1.000,\nseg%05d.m4s\n", marker, j)
+		}
+		st.stamp(dir, []byte(b.String()), tl)
+	}
+	if len(st.cache) != n {
+		t.Fatalf("cached %d of %d segments", len(st.cache), n)
+	}
+	after := heap()
+	var grew uint64
+	if after > before {
+		grew = after - before
+	}
+	// The retained history is about n²/2 markers. The names themselves are not.
+	history := uint64(n*(n+1)/2) * pad
+	if grew > history/10 {
+		t.Fatalf("stamp kept %d bytes after %d playlists; a retained history is about %d", grew, n, history)
+	}
 }
 
 // Half-second segments must not bring the rewind window down to a count of

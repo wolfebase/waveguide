@@ -187,7 +187,7 @@ func (p *playlistStamper) stamp(dir string, src []byte, tl *Timeline) []byte {
 				out.WriteString(l + "\n")
 			}
 			pending = pending[:0]
-			if name := partName(trimmed); name != "" {
+			if name := ownName(partName(trimmed)); name != "" {
 				seen[name] = true
 				pts, ok := p.cache[name]
 				if !ok {
@@ -209,7 +209,7 @@ func (p *playlistStamper) stamp(dir string, src []byte, tl *Timeline) []byte {
 			pending = append(pending, line)
 			continue
 		case trimmed != "" && !strings.HasPrefix(trimmed, "#"):
-			name := filepath.Base(trimmed)
+			name := ownName(filepath.Base(trimmed))
 			seen[name] = true
 			pts, ok := p.cache[name]
 			if !ok {
@@ -281,6 +281,16 @@ func pendingDur(lines []string) time.Duration {
 		return time.Duration(f * float64(time.Second))
 	}
 	return 0
+}
+
+// ownName copies a token out of the playlist text. playlistStamper stores
+// the first name it sees for each segment, and that name stays until the
+// segment leaves the live window.
+func ownName(name string) string {
+	if name == "" {
+		return ""
+	}
+	return strings.Clone(name)
 }
 
 func partName(line string) string {
