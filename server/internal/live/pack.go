@@ -129,9 +129,10 @@ func startPack(dir string, stdout io.Reader, gate *playlistGate, done chan struc
 }
 
 // Pack turns an fMP4 fragment stream into init.mp4 and one segment per
-// fragment. hls.js will not fetch a part until its buffer is already at the
-// live edge, so a short segment followed by a longer gap stalls. The newest
-// fragment stays a part until the next one arrives and gives it a duration.
+// source group of pictures. hls.js will not fetch a part until its buffer is
+// already at the live edge, so the first picture waits for a closed segment.
+// A keyframe fragment that already names a length of at least half a second
+// is that segment. A shorter fragment stays a part until the next keyframe.
 func Pack(dir string, r io.Reader, gate *playlistGate) error {
 	var init []byte
 	var track uint32
@@ -262,6 +263,14 @@ func Pack(dir string, r io.Reader, gate *playlistGate) error {
 			return err
 		}
 		open = append(open, packedPart{name: name, pts: pts, dur: dur, body: frag, sync: sync})
+		// This fragment is one finished group. Closing it on the next group
+		// would hold the first picture for that long, and the cut would be
+		// the same one. A short fragment still waits for the next keyframe.
+		if sync && dur >= int64(partTicks) && len(open) == 1 {
+			if err := closeSeg(pts + dur); err != nil {
+				return err
+			}
+		}
 		return flush()
 	}
 

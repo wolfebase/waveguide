@@ -50,7 +50,7 @@ func TestPlaylistGateWakesForTheNextPart(t *testing.T) {
 	}
 }
 
-func TestPackListsAPartBeforeTheSegmentCloses(t *testing.T) {
+func TestPackClosesAFinishedGroupBeforeTheNext(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg not installed")
@@ -111,49 +111,41 @@ func TestPackListsAPartBeforeTheSegmentCloses(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		b, err := os.ReadFile(filepath.Join(out, "index.m3u8"))
-		if err == nil && strings.Contains(string(b), "#EXT-X-PART:") {
+		if err == nil && strings.Contains(string(b), "#EXTINF:") && strings.Contains(string(b), "seg00000.m4s") {
 			playlist = string(b)
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if playlist == "" {
-		t.Fatal("no part was listed before the rest of the stream")
+		b, _ := os.ReadFile(filepath.Join(out, "index.m3u8"))
+		t.Fatalf("the first group was not a segment:\n%s", b)
 	}
-	if strings.Contains(playlist, "#EXTINF") {
-		t.Fatalf("the first fragment closed a segment:\n%s", playlist)
-	}
-	partDur := 0.0
+	segDur := 0.0
 	for _, line := range strings.Split(playlist, "\n") {
-		v, ok := strings.CutPrefix(line, "#EXT-X-PART:DURATION=")
+		v, ok := strings.CutPrefix(line, "#EXTINF:")
 		if !ok {
 			continue
 		}
-		if i := strings.IndexByte(v, ','); i >= 0 {
-			v = v[:i]
-		}
-		partDur, err = strconv.ParseFloat(v, 64)
+		v = strings.TrimSuffix(v, ",")
+		segDur, err = strconv.ParseFloat(v, 64)
 		if err != nil {
 			t.Fatal(err)
 		}
 		break
 	}
-	// This source's group of pictures is two seconds. Advertising 0.500 would
-	// make the player treat the whole fragment as half a second.
-	hold := 0.0
-	if i := strings.Index(playlist, "PART-HOLD-BACK="); i >= 0 {
-		_, _ = fmt.Sscanf(playlist[i+len("PART-HOLD-BACK="):], "%f", &hold)
-	}
-	if partDur < 1.5 || hold+0.001 < partDur*3 || !strings.Contains(playlist, "CAN-BLOCK-RELOAD=YES") {
-		t.Fatalf("part %.3f hold %.3f, playlist:\n%s", partDur, hold, playlist)
+	// This source's group of pictures is two seconds. Closing it as 0.500
+	// would make the player expect the next group half a second later.
+	if segDur < 1.5 || strings.Contains(playlist, "#EXT-X-PART:") || !strings.Contains(playlist, "CAN-BLOCK-RELOAD=YES") {
+		t.Fatalf("segment %.3f, playlist:\n%s", segDur, playlist)
 	}
 	fixed := time.Date(2026, 9, 26, 4, 0, 0, 0, time.UTC)
 	tl := NewTimeline()
 	tl.now = func() time.Time { return fixed }
 	var stamper playlistStamper
 	stamped := string(stamper.stamp(out, []byte(playlist), tl))
-	if !strings.Contains(stamped, "#EXT-X-PART:") {
-		t.Fatalf("stamping dropped the part:\n%s", stamped)
+	if !strings.Contains(stamped, "seg00000.m4s") || !strings.Contains(stamped, "#EXT-X-PROGRAM-DATE-TIME:") {
+		t.Fatalf("stamping dropped the first segment:\n%s", stamped)
 	}
 	earliest, ok := tl.Earliest()
 	if !ok || !earliest.Equal(fixed.Add(-4*time.Second)) {
@@ -175,6 +167,51 @@ func TestPackListsAPartBeforeTheSegmentCloses(t *testing.T) {
 		t.Fatalf("segment 0 missing:\n%s", final)
 	}
 	assertSegmentCuts(t, string(final))
+}
+
+// A finished keyframe group is a segment before the next group arrives.
+// A shorter group stays a part. hls.js does not play a part at startup.
+func TestFinishedGroupClosesBeforeTheNextFragment(t *testing.T) {
+	dir := t.TempDir()
+	pr, pw := io.Pipe()
+	packErr := make(chan error, 1)
+	go func() { packErr <- Pack(dir, pr, nil) }()
+	if _, err := pw.Write(videoInit()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pw.Write(keyframeFragment(0, 90000)); err != nil {
+		t.Fatal(err)
+	}
+	playlist := waitPlaylist(t, dir, "#EXTINF:1.000,\nseg00000.m4s\n")
+	if strings.Contains(playlist, "#EXT-X-PART:") {
+		t.Fatalf("a one-second group stayed a part:\n%s", playlist)
+	}
+	if _, err := pw.Write(keyframeFragment(90000, 20000)); err != nil {
+		t.Fatal(err)
+	}
+	short := waitPlaylist(t, dir, "#EXT-X-PART:")
+	if strings.Count(short, "#EXTINF:") != 1 {
+		t.Fatalf("the short group closed a second segment:\n%s", short)
+	}
+	_ = pw.Close()
+	if err := <-packErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitPlaylist(t *testing.T, dir, needle string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := os.ReadFile(filepath.Join(dir, "index.m3u8"))
+		if err == nil && strings.Contains(string(b), needle) {
+			return string(b)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "index.m3u8"))
+	t.Fatalf("playlist never contained %q:\n%s", needle, b)
+	return ""
 }
 
 func restAfter(boxes [][]byte) []byte {
