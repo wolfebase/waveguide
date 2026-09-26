@@ -1123,8 +1123,15 @@ func waitServable(h *live.Hub, channelID int64, key string, d time.Duration) {
 	}
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
+		// A restart replaces the gate. Spending the whole deadline on the
+		// old one hides the playlist the new encode is writing.
+		slice := 100 * time.Millisecond
+		if remain := time.Until(deadline); remain < slice {
+			slice = remain
+		}
+		started := time.Now()
 		// Segment 0. A negative part means the whole segment, not an open part.
-		h.WaitMedia(channelID, key, 0, -1, time.Until(deadline))
+		h.WaitMedia(channelID, key, 0, -1, slice)
 		body, err := h.Playlist(channelID, key)
 		if err == nil && strings.Count(string(body), "#EXTINF") >= 1 {
 			return
@@ -1132,7 +1139,9 @@ func waitServable(h *live.Hub, channelID int64, key string, d time.Duration) {
 		if !time.Now().Before(deadline) {
 			return
 		}
-		// No gate yet, or the playlist was not on disk at the wake.
-		time.Sleep(100 * time.Millisecond)
+		// No gate yet, or this wake was for a playlist a restart already removed.
+		if time.Since(started) < 50*time.Millisecond {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 }

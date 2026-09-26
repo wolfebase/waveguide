@@ -1,6 +1,9 @@
 package live
 
-import "io"
+import (
+	"bytes"
+	"io"
+)
 
 // programFilterCap is how much of a multiplex to hold while looking for one
 // program's map. A PAT is repeated within 100 ms and a PMT within 400 ms,
@@ -18,6 +21,7 @@ type programPipe struct {
 	program int
 	ready   bool
 	pass    bool
+	synced  bool
 	keep    map[int]bool
 	pat     [188]byte
 	cc      byte
@@ -40,6 +44,25 @@ func (p *programPipe) Write(chunk []byte) (int, error) {
 	}
 	if !p.ready {
 		p.hold = append(p.hold, chunk...)
+		if !p.synced {
+			if len(p.hold) < 188 {
+				return n, nil
+			}
+			// A rendition that attaches after the tune has started begins
+			// mid-packet. Lock once, the way the scan does, and then stay there.
+			i := bytes.IndexByte(p.hold[:188], 0x47)
+			if i < 0 {
+				p.pass = true
+				buf := p.hold
+				p.hold = nil
+				_, err := p.w.Write(buf)
+				return n, err
+			}
+			p.synced = true
+			if i > 0 {
+				p.hold = append([]byte(nil), p.hold[i:]...)
+			}
+		}
 		if !p.learn(p.hold) {
 			if !p.pass && len(p.hold) < programFilterCap {
 				return n, nil
@@ -102,6 +125,11 @@ func (p *programPipe) learn(buf []byte) bool {
 		if len(sec) < 12 || sec[0] != 0x02 {
 			continue
 		}
+		// A table split across packets is not finished in the first one.
+		// Parsing that prefix freezes the stream list without the rest.
+		if sectionEnd(sec)+4 > len(sec) {
+			continue
+		}
 		pcr = int(sec[8]&0x1f)<<8 | int(sec[9])
 		pids = pmtElementary(sec)
 		if len(pids) > 0 {
@@ -132,7 +160,8 @@ func (p *programPipe) filter(data []byte) ([]byte, []byte) {
 	off := 0
 	for off+188 <= len(data) {
 		if data[off] != 0x47 {
-			off++
+			// One lost sync byte. Stepping by one would slide the phase for good.
+			off += 188
 			continue
 		}
 		pkt := data[off : off+188]

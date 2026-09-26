@@ -119,6 +119,72 @@ func TestProgramFilterPassesThroughWhenTheProgramIsAbsent(t *testing.T) {
 	}
 }
 
+func TestProgramFilterKeepsAudioSplitAcrossTheProgramMap(t *testing.T) {
+	pat := psiPacket(0, psiSection(0x00, append([]byte{0x00, 0x01, 0xc1, 0x00, 0x00}, progPID(1, 0x1000)...)))
+	first, second := splitProgramMap(1, 0x1000, 0x110, 0x111)
+	video := tsPacket(0x110, true, []byte{0x00, 0x00, 0x01, 0xe0})
+	audio := tsPacket(0x111, true, []byte{0x00, 0x00, 0x01, 0xc0})
+	sibling := tsPacket(0x210, true, bytes.Repeat([]byte{0xff}, 20))
+	var buf bytes.Buffer
+	w := newProgramPipe(&closeBuf{&buf}, 1)
+	if _, err := w.Write(append(pat, first...)); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatal("closed the stream list on the first half of the program map")
+	}
+	rest := append(append(second, video...), audio...)
+	rest = append(rest, sibling...)
+	if _, err := w.Write(rest); err != nil {
+		t.Fatal(err)
+	}
+	got := pidsOf(buf.Bytes())
+	if !got[0x110] || !got[0x111] || got[0x210] {
+		t.Fatalf("pids %v", got)
+	}
+}
+
+func TestProgramFilterLocksSyncPastAPartialPacket(t *testing.T) {
+	raw := append(bytes.Repeat([]byte{0x11}, 40), twoProgramTS(1, 0x1000, 0x110, 0x111, 2, 0x1001, 0x210)...)
+	var buf bytes.Buffer
+	w := newProgramPipe(&closeBuf{&buf}, 1)
+	for len(raw) > 0 {
+		n := 100
+		if n > len(raw) {
+			n = len(raw)
+		}
+		if _, err := w.Write(raw[:n]); err != nil {
+			t.Fatal(err)
+		}
+		raw = raw[n:]
+	}
+	got := pidsOf(buf.Bytes())
+	if !got[0x110] || !got[0x111] || got[0x210] {
+		t.Fatalf("pids %v", got)
+	}
+}
+
+func splitProgramMap(program, pmtPID, videoPID, audioPID int) (first, second []byte) {
+	const infoLen = 166
+	body := []byte{
+		byte(program >> 8), byte(program),
+		0xc1, 0x00, 0x00,
+		0xe0 | byte(videoPID>>8), byte(videoPID),
+		0xf0 | byte(infoLen>>8), byte(infoLen),
+	}
+	body = append(body, bytes.Repeat([]byte{0x00}, infoLen)...)
+	body = append(body, streamMPEG2, 0xe0|byte(videoPID>>8), byte(videoPID), 0xf0, 0x00)
+	body = append(body, streamAC3, 0xe0|byte(audioPID>>8), byte(audioPID), 0xf0, 0x00)
+	sec := appendCRC(0x02, body)
+	if len(sec) <= 183 {
+		panic("program map fits in one packet")
+	}
+	pay1 := append([]byte{0x00}, sec[:183]...)
+	first = tsPacket(pmtPID, true, pay1)
+	second = tsPacket(pmtPID, false, sec[183:])
+	return first, second
+}
+
 func TestProgramFilterPassesASingleStreamThrough(t *testing.T) {
 	raw := []byte("not a transport stream")
 	var buf bytes.Buffer
