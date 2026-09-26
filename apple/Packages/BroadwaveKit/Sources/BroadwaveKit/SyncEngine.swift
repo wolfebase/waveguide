@@ -45,7 +45,7 @@ public final class SyncEngine {
         case rate(Float, locked: Bool)
     }
 
-    static func decide(hasFrame: Bool, driftMS: Double, roomRate: Double, canSeek: Bool) -> SyncMove {
+    static func decide(hasFrame: Bool, driftMS: Double, roomRate: Double, canSeek: Bool, forwardBuffer: Double = 2) -> SyncMove {
         guard hasFrame else { return .wait }
         if roomRate == 0 {
             return .pause(resumeAfter: nil, seekToTarget: canSeek && abs(driftMS) > trimMS * 2)
@@ -54,10 +54,20 @@ public final class SyncEngine {
             if driftMS > 0 {
                 return .pause(resumeAfter: driftMS / 1000, seekToTarget: false)
             }
-            return canSeek ? .seek : .wait
+            // Chasing a target the buffer does not hold lands past the live edge.
+            if !canSeek {
+                return .wait
+            }
+            if forwardBuffer < 1.5 {
+                return .rate(1, locked: false)
+            }
+            return .seek
         }
         if abs(driftMS) > trimMS {
-            let trimmed = Float(1 + max(-maxTrim, min(maxTrim, -driftMS / 2000)))
+            var trimmed = Float(1 + max(-maxTrim, min(maxTrim, -driftMS / 2000)))
+            if trimmed > 1, forwardBuffer < 1.5 {
+                trimmed = 1
+            }
             return .rate(trimmed, locked: false)
         }
         return .rate(1, locked: true)
@@ -133,7 +143,7 @@ public final class SyncEngine {
             state = hasFrame ? .syncing : .waiting
             return
         }
-        switch Self.decide(hasFrame: hasFrame, driftMS: d, roomRate: st.rate, canSeek: canSeek(to: target, item: item)) {
+        switch Self.decide(hasFrame: hasFrame, driftMS: d, roomRate: st.rate, canSeek: canSeek(to: target, item: item), forwardBuffer: bufferedAhead(item)) {
         case .wait:
             state = .waiting
         case let .pause(resumeAfter, seekToTarget):
@@ -159,6 +169,28 @@ public final class SyncEngine {
             }
             state = locked ? .locked : .syncing
         }
+    }
+
+    /// Seconds of media loaded past the playhead.
+    private func bufferedAhead(_ item: AVPlayerItem) -> Double {
+        let now = CMTimeGetSeconds(item.currentTime())
+        if !now.isFinite {
+            return 0
+        }
+        var ahead = 0.0
+        for value in item.loadedTimeRanges {
+            let range = value.timeRangeValue
+            let start = CMTimeGetSeconds(range.start)
+            let dur = CMTimeGetSeconds(range.duration)
+            if !start.isFinite || !dur.isFinite {
+                continue
+            }
+            let end = start + dur
+            if now >= start - 0.05, now <= end {
+                ahead = max(ahead, end - now)
+            }
+        }
+        return ahead
     }
 
     /// The target date has to fall in a range the item can already play.

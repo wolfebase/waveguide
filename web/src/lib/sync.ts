@@ -12,6 +12,8 @@ export type SyncStatus = {
 const TRIM_MS = 20;
 const SEEK_MS = 400;
 const MAX_TRIM = 0.03;
+// Speeding up, or seeking forward, with less media than this underruns the live edge.
+const CUSHION_S = 1.5;
 
 type Frag = { start: number; duration: number; programDateTime: number | null };
 
@@ -102,6 +104,18 @@ export class SyncEngine {
     return null;
   }
 
+  /** Seconds of media buffered past the playhead. Zero when the playhead is already past it. */
+  private forwardMedia(): number {
+    const t = this.video.currentTime;
+    const ranges = this.video.buffered;
+    let ahead = 0;
+    for (let i = 0; i < ranges.length; i++) {
+      const end = ranges.end(i);
+      if (t >= ranges.start(i) - 0.05 && t <= end) ahead = Math.max(ahead, end - t);
+    }
+    return ahead;
+  }
+
   /**
    * Moves this screen onto the target. Ahead: pause for exactly the drift while the
    * buffer keeps filling (backward seeks in a live buffer are fragile). Behind: seek forward.
@@ -158,14 +172,23 @@ export class SyncEngine {
       return;
     }
     if (video.paused) void video.play().catch(() => undefined);
+    const ahead = this.forwardMedia();
     if (Math.abs(drift) > SEEK_MS) {
       video.playbackRate = 1;
+      // The target is not buffered, or the cushion is too thin to chase it.
+      // Hold rate at 1; a seek past the edge stalls the picture.
+      if (drift < 0 && (this.timeFor(target) == null || ahead < CUSHION_S)) {
+        this.setStatus({ state: "syncing", drift, members: st.members, room: st });
+        return;
+      }
       this.correct(drift, target);
       this.setStatus({ state: "syncing", drift, members: st.members, room: st });
       return;
     }
     if (Math.abs(drift) > TRIM_MS) {
-      video.playbackRate = 1 + Math.max(-MAX_TRIM, Math.min(MAX_TRIM, -drift / 2000));
+      let rate = 1 + Math.max(-MAX_TRIM, Math.min(MAX_TRIM, -drift / 2000));
+      if (rate > 1 && ahead < CUSHION_S) rate = 1;
+      video.playbackRate = rate;
       this.setStatus({ state: "syncing", drift, members: st.members, room: st });
       return;
     }

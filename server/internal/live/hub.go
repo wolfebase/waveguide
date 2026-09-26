@@ -126,6 +126,11 @@ type Hub struct {
 	// recordings, or tuners change.
 	OnChange func()
 
+	// OnMedia is called, outside the hub lock, after a live playlist is stamped.
+	// The bus moves a follow room onto its latency target once that playlist
+	// holds the frame.
+	OnMedia func(channelID int64)
+
 	// OnPSIP is called, outside the read loop, when a tuned mux yields a guide.
 	OnPSIP func(freqHz int, guide psip.Guide)
 
@@ -976,7 +981,11 @@ func (h *Hub) Playlist(channelID int64, key string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return r.stamper.stamp(r.dir, raw, clock), nil
+	body := r.stamper.stamp(r.dir, raw, clock)
+	if h.OnMedia != nil {
+		h.OnMedia(channelID)
+	}
+	return body, nil
 }
 
 // WaitMedia blocks until the rendition's playlist contains that segment or

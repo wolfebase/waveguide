@@ -230,6 +230,13 @@ func (p *playlistStamper) stamp(dir string, src []byte, tl *Timeline) []byte {
 			} else if ok && tl != nil {
 				noteBreak(pts)
 				wall := tl.Wall(pts)
+				// A short step the jump check missed overlaps the previous
+				// segment. Pin it to that segment's end and re-anchor, so the
+				// program timeline stays monotonic and the next segment continues.
+				if haveEnd && wall.Before(lastEnd) {
+					wall = lastEnd
+					tl.Reanchor(pts, wall)
+				}
 				p.walls[name] = wall
 				out.WriteString("#EXT-X-PROGRAM-DATE-TIME:" + wall.UTC().Format("2006-01-02T15:04:05.000Z") + "\n")
 				if d := pendingDur(pending); d > 0 {

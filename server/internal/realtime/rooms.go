@@ -97,6 +97,39 @@ func (r *Rooms) Join(room string, channelID int64, earliest float64) RoomState {
 	return *st
 }
 
+// Settle moves follow rooms on this channel from a first-frame anchor back to
+// the latency target once earliest (Unix ms) is old enough to play there.
+// A fresh tune, a room already on its target, a paused room, and a group room
+// stay put. Each changed state is returned so members can be told; a second
+// call is empty.
+func (r *Rooms) Settle(channelID int64, earliest float64) []RoomState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if earliest <= 0 {
+		return nil
+	}
+	var changed []RoomState
+	for _, st := range r.rooms {
+		if st.ChannelID != channelID || st.Mode != "follow" || st.Rate != 1 {
+			continue
+		}
+		now := r.now()
+		nowMS := unixMS(now)
+		target := liveAnchor(now, st.Latency)
+		if earliest > target {
+			continue
+		}
+		// Already at the target, or further behind it. Never pull a room toward live.
+		if st.Target(nowMS) <= target+500 {
+			continue
+		}
+		st.AnchorServer, st.AnchorMedia, st.Rate = nowMS, target, 1
+		st.Version++
+		changed = append(changed, *st)
+	}
+	return changed
+}
+
 // Leave drops a member; an empty room is forgotten.
 func (r *Rooms) Leave(room string) {
 	r.mu.Lock()

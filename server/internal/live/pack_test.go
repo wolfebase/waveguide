@@ -634,6 +634,70 @@ func TestForwardJumpAndWrap(t *testing.T) {
 	}
 }
 
+func TestStampOverlapStaysMonotonic(t *testing.T) {
+	fixed := time.Date(2026, 9, 26, 21, 32, 48, 0, time.UTC)
+	tl := NewTimeline()
+	tl.now = func() time.Time { return fixed }
+	var stamper playlistStamper
+	const tick = 90000.0
+	stamper.cache = map[string]int64{
+		"seg00000.m4s": 0,
+		"seg00001.m4s": int64(0.096 * tick),
+		"seg00002.m4s": int64((0.096 + 1.001) * tick),
+	}
+	raw := []byte("#EXTM3U\n#EXTINF:1.001,\nseg00000.m4s\n#EXTINF:1.001,\nseg00001.m4s\n#EXTINF:1.001,\nseg00002.m4s\n")
+	stamped := string(stamper.stamp(t.TempDir(), raw, tl))
+	walls := dateWalls(t, stamped)
+	if len(walls) != 3 {
+		t.Fatalf("dates %d:\n%s", len(walls), stamped)
+	}
+	for i := 1; i < len(walls); i++ {
+		step := walls[i].Sub(walls[i-1])
+		if step < 900*time.Millisecond || step > 1200*time.Millisecond {
+			t.Fatalf("step %d is %s, want about 1s:\n%s", i, step, stamped)
+		}
+	}
+	earliest, ok := tl.Earliest()
+	if !ok || !earliest.Equal(fixed.Add(-4*time.Second)) {
+		t.Fatalf("earliest moved to %v", earliest)
+	}
+	again := string(stamper.stamp(t.TempDir(), raw, tl))
+	if strings.Join(programDates(again), "\n") != strings.Join(programDates(stamped), "\n") {
+		t.Fatalf("a later playlist moved date-times:\n%s", again)
+	}
+
+	straight := NewTimeline()
+	straight.now = tl.now
+	var plain playlistStamper
+	plain.cache = map[string]int64{
+		"seg00000.m4s": 0,
+		"seg00001.m4s": int64(1.2 * tick),
+	}
+	plainRaw := []byte("#EXTM3U\n#EXTINF:1.001,\nseg00000.m4s\n#EXTINF:1.001,\nseg00001.m4s\n")
+	got := dateWalls(t, string(plain.stamp(t.TempDir(), plainRaw, straight)))
+	if len(got) != 2 {
+		t.Fatal(got)
+	}
+	step := got[1].Sub(got[0])
+	if step < 1150*time.Millisecond || step > 1250*time.Millisecond {
+		t.Fatalf("a later program time was pulled back to %s", step)
+	}
+}
+
+func dateWalls(t *testing.T, playlist string) []time.Time {
+	t.Helper()
+	var walls []time.Time
+	for _, line := range programDates(playlist) {
+		v, _ := strings.CutPrefix(line, "#EXT-X-PROGRAM-DATE-TIME:")
+		wall, err := time.Parse("2006-01-02T15:04:05.000Z", v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		walls = append(walls, wall)
+	}
+	return walls
+}
+
 func TestOpenRunStaysBounded(t *testing.T) {
 	dir := t.TempDir()
 	const step = int64(45000)

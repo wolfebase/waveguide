@@ -59,6 +59,48 @@ func TestFreshRoomStartsOnTheFirstFrame(t *testing.T) {
 	}
 }
 
+func TestFollowRoomSettlesOnceTheBufferCoversTheLatency(t *testing.T) {
+	start := time.Date(2026, 9, 26, 21, 0, 0, 0, time.UTC)
+	r, now := fixedRooms(start)
+	first := unixMS(start.Add(-3500 * time.Millisecond))
+	st := r.Join("channel:4", 4, first)
+	if st.AnchorMedia != first {
+		t.Fatalf("a fresh room starts on the first frame: %+v", st)
+	}
+	if moved := r.Settle(4, first); len(moved) != 0 {
+		t.Fatalf("a fresh first frame must stay, got %+v", moved)
+	}
+	*now = start.Add(20 * time.Second)
+	recent := unixMS(now.Add(-3 * time.Second))
+	if moved := r.Settle(4, recent); len(moved) != 0 {
+		t.Fatalf("a first frame newer than the target must stay, got %+v", moved)
+	}
+	moved := r.Settle(4, first)
+	if len(moved) != 1 {
+		t.Fatalf("expected one settle, got %+v", moved)
+	}
+	want := unixMS(now.Add(-10 * time.Second))
+	if math.Abs(moved[0].Target(unixMS(*now))-want) > 1 || moved[0].Rate != 1 {
+		t.Fatalf("settled target %v want %v (%+v)", moved[0].Target(unixMS(*now)), want, moved[0])
+	}
+	held := moved[0].Version
+	if again := r.Settle(4, first); len(again) != 0 {
+		t.Fatalf("a second settle moved the room: %+v", again)
+	}
+	st, _ = r.State("channel:4")
+	if st.Version != held || math.Abs(st.Target(unixMS(*now))-want) > 1 {
+		t.Fatalf("target drifted after the second settle: %+v", st)
+	}
+	g := r.Join("group:den", 4, first)
+	*now = start.Add(40 * time.Second)
+	if moved := r.Settle(4, first); len(moved) != 0 {
+		t.Fatalf("a group room must stay: %+v (group %+v)", moved, g)
+	}
+	if st, _ = r.State("group:den"); st.AnchorMedia != g.AnchorMedia || st.Version != g.Version {
+		t.Fatalf("group anchor changed: %+v", st)
+	}
+}
+
 func TestMultiviewRoomSharesOneTarget(t *testing.T) {
 	start := time.Date(2026, 9, 22, 20, 0, 0, 0, time.UTC)
 	r, _ := fixedRooms(start)

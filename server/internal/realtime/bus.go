@@ -80,6 +80,17 @@ func (b *Bus) Publish(kind string, v any) {
 	}
 }
 
+// Settle moves this channel's follow rooms onto their latency target once the
+// playlist covers it, and tells the members. A fresh tune is left alone.
+func (b *Bus) Settle(channelID int64, earliest float64) {
+	if b == nil || b.Rooms == nil {
+		return
+	}
+	for _, st := range b.Rooms.Settle(channelID, earliest) {
+		b.publishRoom(st)
+	}
+}
+
 func (b *Bus) publishRoom(st RoomState) {
 	msg := frame("sync.state", st)
 	b.mu.Lock()

@@ -245,6 +245,20 @@ private func fixture(_ name: String) throws -> Data {
     #expect(move == .rate(1, locked: true))
 }
 
+@Test @MainActor func aShortForwardBufferDoesNotChaseTheEdge() {
+    let close = SyncEngine.decide(hasFrame: true, driftMS: -100, roomRate: 1, canSeek: true, forwardBuffer: 0.4)
+    #expect(close == .rate(1, locked: false))
+    let seek = SyncEngine.decide(hasFrame: true, driftMS: -800, roomRate: 1, canSeek: true, forwardBuffer: 0.4)
+    #expect(seek == .rate(1, locked: false))
+    let roomy = SyncEngine.decide(hasFrame: true, driftMS: -100, roomRate: 1, canSeek: true, forwardBuffer: 4)
+    if case let .rate(rate, locked) = roomy {
+        #expect(!locked)
+        #expect(rate > 1)
+    } else {
+        #expect(Bool(false))
+    }
+}
+
 @Test @MainActor func aPlayingStatusWithNoRateStillRestarts() {
     #expect(SyncEngine.shouldKeepPlaying(roomRate: 1, paused: false, rate: 0))
 }
