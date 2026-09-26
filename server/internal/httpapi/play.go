@@ -81,9 +81,8 @@ func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 		session = fresh
 		session.Stream.Reason = reason
 	}
-	if tuners, err := s.Hub.Tuners(r.Context()); err == nil {
-		session.Tuners = tuners
-	}
+	// Tuner status is a separate request. Reading it here holds the hub lock
+	// after the first segment already exists, so the player cannot start.
 	writeJSON(w, http.StatusOK, session)
 }
 
@@ -1117,17 +1116,23 @@ func blockReload(r *http.Request) (msn, part int, ok bool) {
 
 // waitServable returns once the playlist has a segment a player can fetch.
 // A playlist that lists only parts is not enough: hls.js treats that as empty
-// and waits out its retry. The first part still anchors the clock while this polls.
+// and waits out its retry. The first part still anchors the clock while this waits.
 func waitServable(h *live.Hub, channelID int64, key string, d time.Duration) {
 	if h == nil || key == "" {
 		return
 	}
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
+		// Segment 0. A negative part means the whole segment, not an open part.
+		h.WaitMedia(channelID, key, 0, -1, time.Until(deadline))
 		body, err := h.Playlist(channelID, key)
 		if err == nil && strings.Count(string(body), "#EXTINF") >= 1 {
 			return
 		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		// No gate yet, or the playlist was not on disk at the wake.
 		time.Sleep(100 * time.Millisecond)
 	}
 }

@@ -708,7 +708,7 @@ func (h *Hub) ensureRenditionLocked(f *feed, want Rendition) (*rendition, error)
 	NotePID(h.Dir, pid)
 	r := &rendition{spec: want, dir: dir, cmd: cmd, stdin: stdin, seen: time.Now(), args: args, gate: gate, packDone: done}
 	if stdin != nil {
-		r.sub = h.attachPipe(muxOf(h, f), stdin, true)
+		r.sub = h.attachPipe(muxOf(h, f), newProgramPipe(stdin, f.program), true)
 	}
 	f.renditions[key] = r
 	go h.watchRendition(f, r, pid, encoderOf(h.Encoder, want))
@@ -904,7 +904,7 @@ func (h *Hub) restartRenditionLocked(f *feed, r *rendition, software bool) bool 
 	r.restarted = true
 	r.waited.Store(false)
 	if stdin != nil {
-		r.sub = h.attachPipeLocked(muxOf(h, f), stdin)
+		r.sub = h.attachPipeLocked(muxOf(h, f), newProgramPipe(stdin, f.program))
 	}
 	go h.watchRendition(f, r, next, encoder)
 	return true

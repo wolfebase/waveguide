@@ -50,6 +50,18 @@ func TestPlaylistGateWakesForTheNextPart(t *testing.T) {
 	}
 }
 
+func TestPlaylistGateWholeSegmentIgnoresOpenParts(t *testing.T) {
+	g := newPlaylistGate()
+	g.publish(0, 0, 3)
+	if g.ready(0, -1) {
+		t.Fatal("an open segment is not a finished segment")
+	}
+	g.publish(0, 1, 1)
+	if !g.ready(0, -1) {
+		t.Fatal("segment 0 is finished once a later segment is open")
+	}
+}
+
 func TestPackClosesAFinishedGroupBeforeTheNext(t *testing.T) {
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
